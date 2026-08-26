@@ -3,9 +3,9 @@
 Terminal Intelligence will provide a safe workflow for turning natural-language
 terminal requests into approved, verified command execution.
 
-This repository contains the Stage 0 engineering foundation and Stage 1
-immutable domain models. Product functionality is intentionally not
-implemented: command execution, LLM integration, safety policy, UI, and
+This repository contains the Stage 0 engineering foundation, Stage 1 immutable
+domain models, and Stage 2 deterministic direct-argv command execution. LLM
+integration, planning, safety policy, UI, verification, diagnosis, repair, and
 persistence remain future stages.
 
 ## Development

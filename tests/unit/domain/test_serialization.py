@@ -71,6 +71,8 @@ def test_all_remaining_models_round_trip() -> None:
         SUBMITTED_AT,
         DECISION_ID,
         "/tmp",
+        3.5,
+        (("LANG", "C.UTF-8"),),
     )
     result = ExecutionResult(
         RESULT_ID,
@@ -80,6 +82,9 @@ def test_all_remaining_models_round_trip() -> None:
         FINISHED_AT,
         SUBMITTED_AT,
         error="The process exceeded its time limit.",
+        duration_ms=3500,
+        stdout_truncated=True,
+        stderr_truncated=False,
     )
     verification = VerificationResult(
         VERIFICATION_ID,
@@ -93,6 +98,9 @@ def test_all_remaining_models_round_trip() -> None:
     assert ApprovalDecision.from_dict(approval.to_dict()) == approval
     assert ExecutionRequest.from_dict(execution.to_dict()) == execution
     assert ExecutionResult.from_dict(result.to_dict()) == result
+    assert execution.to_dict()["environment"] == [["LANG", "C.UTF-8"]]
+    assert result.to_dict()["duration_ms"] == 3500
+    assert result.to_dict()["stdout_truncated"] is True
     assert VerificationResult.from_dict(verification.to_dict()) == verification
 
 

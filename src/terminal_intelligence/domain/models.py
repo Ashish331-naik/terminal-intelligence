@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+from math import isfinite
 from uuid import UUID
 
 from terminal_intelligence.domain.enums import (
@@ -139,8 +140,66 @@ def _serialized_argv(value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _environment(value: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, tuple):
+        raise DomainValidationError("environment must be an immutable tuple", field="environment")
+    entries: list[tuple[str, str]] = []
+    keys: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, tuple) or len(entry) != 2:
+            raise DomainValidationError(
+                "environment entries must be key/value tuples", field="environment"
+            )
+        key, item = entry
+        if not isinstance(key, str) or not key:
+            raise DomainValidationError(
+                "environment keys must be non-empty strings", field="environment"
+            )
+        if not isinstance(item, str):
+            raise DomainValidationError("environment values must be strings", field="environment")
+        if "\x00" in key or "\x00" in item:
+            raise DomainValidationError(
+                "environment entries must not contain NUL characters", field="environment"
+            )
+        if key in keys:
+            raise DomainValidationError("environment keys must be unique", field="environment")
+        keys.add(key)
+        entries.append((key, item))
+    return tuple(entries)
+
+
+def _serialized_environment(value: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, list):
+        raise DomainValidationError("environment must be a serialized array", field="environment")
+    entries: list[tuple[str, str]] = []
+    for entry in value:
+        if not isinstance(entry, list) or len(entry) != 2:
+            raise DomainValidationError(
+                "environment entries must be serialized pairs", field="environment"
+            )
+        key, item = entry
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise DomainValidationError(
+                "environment entries must contain strings", field="environment"
+            )
+        entries.append((key, item))
+    return tuple(entries)
+
+
 def _optional_error(value: object, field: str = "error") -> str | None:
     return _optional_string(value, field)
+
+
+def _timeout_seconds(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DomainValidationError(
+            "timeout_seconds must be a finite positive number", field="timeout_seconds"
+        )
+    if not isfinite(value) or value <= 0:
+        raise DomainValidationError(
+            "timeout_seconds must be a finite positive number", field="timeout_seconds"
+        )
+    return float(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +356,8 @@ class ExecutionRequest:
     requested_at: datetime
     approval_decision_id: UUID | None = None
     working_directory: str | None = None
+    timeout_seconds: float = 30.0
+    environment: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         _uuid(self.execution_request_id, "execution_request_id")
@@ -307,6 +368,8 @@ class ExecutionRequest:
         if self.approval_decision_id is not None:
             _uuid(self.approval_decision_id, "approval_decision_id")
         _optional_string(self.working_directory, "working_directory")
+        _timeout_seconds(self.timeout_seconds)
+        _environment(self.environment)
 
     def to_dict(self) -> SerializedModel:
         return {
@@ -320,6 +383,8 @@ class ExecutionRequest:
                 str(self.approval_decision_id) if self.approval_decision_id is not None else None
             ),
             "working_directory": self.working_directory,
+            "timeout_seconds": self.timeout_seconds,
+            "environment": [list(entry) for entry in self.environment],
         }
 
     @classmethod
@@ -333,9 +398,12 @@ class ExecutionRequest:
             "requested_at",
             "approval_decision_id",
             "working_directory",
+            "timeout_seconds",
+            "environment",
         }
         _ensure_schema(data, fields)
         raw_approval_id = data.get("approval_decision_id")
+        raw_environment = data.get("environment", [])
         return cls(
             execution_request_id=_serialized_uuid(
                 _required(data, "execution_request_id"), "execution_request_id"
@@ -350,6 +418,8 @@ class ExecutionRequest:
                 else _serialized_uuid(raw_approval_id, "approval_decision_id")
             ),
             working_directory=_optional_string(data.get("working_directory"), "working_directory"),
+            timeout_seconds=_timeout_seconds(data.get("timeout_seconds", 30.0)),
+            environment=_serialized_environment(raw_environment),
         )
 
 
@@ -367,6 +437,9 @@ class ExecutionResult:
     stdout: str = ""
     stderr: str = ""
     error: str | None = None
+    duration_ms: int = 0
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
     def __post_init__(self) -> None:
         _uuid(self.result_id, "result_id")
@@ -388,6 +461,22 @@ class ExecutionResult:
             raise DomainValidationError("stdout must be a string", field="stdout")
         if not isinstance(self.stderr, str):
             raise DomainValidationError("stderr must be a string", field="stderr")
+        if isinstance(self.duration_ms, bool) or not isinstance(self.duration_ms, int):
+            raise DomainValidationError(
+                "duration_ms must be a non-negative integer", field="duration_ms"
+            )
+        if self.duration_ms < 0:
+            raise DomainValidationError(
+                "duration_ms must be a non-negative integer", field="duration_ms"
+            )
+        if not isinstance(self.stdout_truncated, bool):
+            raise DomainValidationError(
+                "stdout_truncated must be a boolean", field="stdout_truncated"
+            )
+        if not isinstance(self.stderr_truncated, bool):
+            raise DomainValidationError(
+                "stderr_truncated must be a boolean", field="stderr_truncated"
+            )
         error = _optional_error(self.error)
         if self.status is ExecutionStatus.SUCCEEDED:
             if self.exit_code != 0:
@@ -398,10 +487,22 @@ class ExecutionResult:
                 raise DomainValidationError(
                     "successful results cannot contain an error", field="error"
                 )
+        elif self.status is ExecutionStatus.START_FAILED:
+            if self.exit_code is not None:
+                raise DomainValidationError(
+                    "start_failed results cannot contain an exit_code", field="exit_code"
+                )
+            if self.started_at is not None:
+                raise DomainValidationError(
+                    "start_failed results cannot contain started_at", field="started_at"
+                )
+            if self.stdout or self.stderr:
+                raise DomainValidationError(
+                    "start_failed results cannot contain captured output", field="stdout"
+                )
         elif (
             self.status
             in {
-                ExecutionStatus.START_FAILED,
                 ExecutionStatus.TIMED_OUT,
                 ExecutionStatus.CANCELLED,
             }
@@ -433,6 +534,9 @@ class ExecutionResult:
             "stdout": self.stdout,
             "stderr": self.stderr,
             "error": self.error,
+            "duration_ms": self.duration_ms,
+            "stdout_truncated": self.stdout_truncated,
+            "stderr_truncated": self.stderr_truncated,
         }
 
     @classmethod
@@ -449,6 +553,9 @@ class ExecutionResult:
             "stdout",
             "stderr",
             "error",
+            "duration_ms",
+            "stdout_truncated",
+            "stderr_truncated",
         }
         _ensure_schema(data, fields)
         raw_started_at = data.get("started_at")
@@ -459,10 +566,25 @@ class ExecutionResult:
             raise DomainValidationError("exit_code must be an integer or None", field="exit_code")
         raw_stdout = data.get("stdout", "")
         raw_stderr = data.get("stderr", "")
+        raw_duration_ms = data.get("duration_ms", 0)
+        raw_stdout_truncated = data.get("stdout_truncated", False)
+        raw_stderr_truncated = data.get("stderr_truncated", False)
         if not isinstance(raw_stdout, str):
             raise DomainValidationError("stdout must be a string", field="stdout")
         if not isinstance(raw_stderr, str):
             raise DomainValidationError("stderr must be a string", field="stderr")
+        if isinstance(raw_duration_ms, bool) or not isinstance(raw_duration_ms, int):
+            raise DomainValidationError(
+                "duration_ms must be a non-negative integer", field="duration_ms"
+            )
+        if not isinstance(raw_stdout_truncated, bool):
+            raise DomainValidationError(
+                "stdout_truncated must be a boolean", field="stdout_truncated"
+            )
+        if not isinstance(raw_stderr_truncated, bool):
+            raise DomainValidationError(
+                "stderr_truncated must be a boolean", field="stderr_truncated"
+            )
         return cls(
             result_id=_serialized_uuid(_required(data, "result_id"), "result_id"),
             request_id=_serialized_uuid(_required(data, "request_id"), "request_id"),
@@ -480,6 +602,9 @@ class ExecutionResult:
             stdout=raw_stdout,
             stderr=raw_stderr,
             error=_optional_error(data.get("error")),
+            duration_ms=raw_duration_ms,
+            stdout_truncated=raw_stdout_truncated,
+            stderr_truncated=raw_stderr_truncated,
         )
 
 

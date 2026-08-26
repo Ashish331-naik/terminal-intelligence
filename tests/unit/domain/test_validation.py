@@ -1,6 +1,7 @@
 """Invalid-value and enum validation tests for domain models."""
 
 from datetime import UTC, datetime, timedelta, timezone
+from math import inf, nan
 from typing import cast
 from uuid import UUID
 
@@ -79,6 +80,39 @@ def test_execution_request_rejects_blank_optional_values() -> None:
         )
 
 
+def test_execution_request_rejects_invalid_timeout_and_environment() -> None:
+    for timeout in (0, -1, inf, nan, True):
+        with pytest.raises(DomainValidationError, match="timeout_seconds"):
+            ExecutionRequest(
+                EXECUTION_ID,
+                REQUEST_ID,
+                PROPOSAL_ID,
+                ("echo",),
+                SUBMITTED_AT,
+                timeout_seconds=timeout,
+            )
+
+    with pytest.raises(DomainValidationError, match="unique"):
+        ExecutionRequest(
+            EXECUTION_ID,
+            REQUEST_ID,
+            PROPOSAL_ID,
+            ("echo",),
+            SUBMITTED_AT,
+            environment=(("KEY", "one"), ("KEY", "two")),
+        )
+
+    with pytest.raises(DomainValidationError, match="NUL"):
+        ExecutionRequest(
+            EXECUTION_ID,
+            REQUEST_ID,
+            PROPOSAL_ID,
+            ("echo",),
+            SUBMITTED_AT,
+            environment=(("KEY", "bad\x00value"),),
+        )
+
+
 def test_execution_result_rejects_invalid_status_combinations() -> None:
     with pytest.raises(DomainValidationError, match="exit_code 0"):
         ExecutionResult(
@@ -107,6 +141,25 @@ def test_execution_result_rejects_invalid_status_combinations() -> None:
         )
 
 
+def test_start_failed_result_rejects_started_process_state() -> None:
+    for kwargs in (
+        {"exit_code": 1},
+        {"started_at": SUBMITTED_AT},
+        {"stdout": "unexpected output"},
+        {"stderr": "unexpected error"},
+    ):
+        with pytest.raises(DomainValidationError):
+            ExecutionResult(
+                UUID("00000000-0000-0000-0000-000000000005"),
+                REQUEST_ID,
+                EXECUTION_ID,
+                ExecutionStatus.START_FAILED,
+                FINISHED_AT,
+                error="could not start",
+                **kwargs,
+            )
+
+
 def test_execution_result_rejects_bool_exit_code() -> None:
     with pytest.raises(DomainValidationError, match="exit_code"):
         ExecutionResult(
@@ -116,6 +169,19 @@ def test_execution_result_rejects_bool_exit_code() -> None:
             ExecutionStatus.SUCCEEDED,
             FINISHED_AT,
             exit_code=cast(int, True),
+        )
+
+
+def test_execution_result_rejects_negative_duration() -> None:
+    with pytest.raises(DomainValidationError, match="duration_ms"):
+        ExecutionResult(
+            UUID("00000000-0000-0000-0000-000000000005"),
+            REQUEST_ID,
+            EXECUTION_ID,
+            ExecutionStatus.SUCCEEDED,
+            FINISHED_AT,
+            exit_code=0,
+            duration_ms=-1,
         )
 
 
